@@ -1,0 +1,77 @@
+name: P40 GitHub Connector E2E
+on:
+  workflow_dispatch:
+    inputs:
+      SPEC_FORGE_OPERATION_ID:
+        required: false
+      SPEC_FORGE_SOURCE_COMMIT:
+        required: false
+      SPEC_FORGE_ENVIRONMENT:
+        required: false
+      SPEC_FORGE_TARGET_REVISION:
+        required: false
+  repository_dispatch:
+    types: [specforge-test-deployment]
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+  deployments: write
+concurrency:
+  group: p40-github-connector-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build static site
+        run: |
+          mkdir -p public
+          cat > public/index.html <<'HTML'
+          <!doctype html><html><head><meta charset="utf-8"><title>P40 GitHub Connector</title></head>
+          <body><h1>P40 GitHub Actions connector acceptance</h1><p>Deployed at __TIMESTAMP__</p></body></html>
+          HTML
+          sed -i "s/__TIMESTAMP__/$(date -u +%Y-%m-%dT%H:%M:%SZ)/" public/index.html
+      - uses: actions/configure-pages@v5
+        with:
+          enablement: true
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+      - id: deployment
+        uses: actions/deploy-pages@v4
+      - name: Record p40-test deployment
+        uses: actions/github-script@v7
+        env:
+          PAGE_URL: ${{ steps.deployment.outputs.page_url }}
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const ref = context.ref.replace('refs/heads/', '');
+            const operationId =
+              context.payload.inputs?.SPEC_FORGE_OPERATION_ID ??
+              context.payload.client_payload?.SPEC_FORGE_OPERATION_ID ??
+              null;
+            const created = await github.rest.repos.createDeployment({
+              owner,
+              repo,
+              ref,
+              environment: 'p40-test',
+              required_contexts: [],
+              auto_merge: false,
+              description: 'P40 GitHub connector acceptance',
+              transient_environment: true,
+              production_environment: false,
+              payload: { operation_id: operationId },
+            });
+            const deployment = created.data;
+            await github.rest.repos.createDeploymentStatus({
+              owner,
+              repo,
+              deployment_id: deployment.id,
+              state: 'success',
+              environment_url: process.env.PAGE_URL,
+              description: 'P40 static Pages deployment succeeded',
+              auto_inactive: false,
+            });
